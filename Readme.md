@@ -328,10 +328,29 @@ public void fetchAndQueueJobs() { ... }
 
 **Learning:** Distributed systems need idempotency at the application level.
 
-#### 4. **READY State Ambiguity**
-The `SchedulerService` sets jobs to `READY` state, but the `WorkerService` only processes `PENDING` jobs. This mismatch can orphan jobs.
+#### 4. **READY State Creates Job Orphaning**
+```java
+// SchedulerService.java
+job.setState(JobState.READY);  // Set to READY
+jobRepo.save(job);
+redisTemplate.opsForList().leftPush(redisKey, job.getId().toString());
 
-**Learning:** State machines need careful alignment across all components.
+// WorkerService.java
+jobRepo.findTop10ByStateOrderByScheduledAtAsc(JobState.PENDING)  // Only looks for PENDING!
+```
+
+**Problem:** Jobs transition to `READY` state but workers only process `PENDING` jobs. If Redis push fails after state change, the job is permanently orphaned.
+
+**Impact:** Jobs stuck in READY state are never executed.
+
+**Learning:**
+- State transitions must be atomic with queue operations
+- Intermediate states add complexity without value
+- Production fix: Remove READY state entirely, use `queuedAt` timestamp instead:
+  ```java
+  job.setQueuedAt(Instant.now());  // Simple flag, no state change
+  jobRepo.save(job);
+  ```
 
 ### What I'd Add for Production
 

@@ -38,4 +38,8 @@ public interface JobEntityRepository extends JpaRepository<JobEntity, UUID> {
     List<JobEntity> findByStateIn(List<JobState> ready);
 
     Iterable<JobEntity> findTop10ByStateOrderByScheduledAtAsc(JobState jobState);
+
+    List<JobEntity> findByStateAndScheduledAtBeforeAndQueuedAtIsNull(JobState jobState, Instant now);
+
+    List<JobEntity> findByStateAndQueuedAtIsNotNull(JobState jobState);
 }

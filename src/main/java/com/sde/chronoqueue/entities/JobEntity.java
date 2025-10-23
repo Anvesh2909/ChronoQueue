@@ -60,6 +60,9 @@ public class JobEntity {
     @Column(unique = true)
     private String idempotencyKey;
 
+    @Column(name = "queued_at")
+    private Instant queuedAt;
+
     /** ✅ Retry backoff config stored as plain text */
     @Column(name = "retry_backoff", columnDefinition = "text")
     private String retryBackoff = """

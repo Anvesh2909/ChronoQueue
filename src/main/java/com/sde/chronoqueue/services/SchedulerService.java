@@ -25,22 +25,28 @@ public class SchedulerService {
     @Scheduled(fixedRate = 5000)
     public void moveDueJobsToRedis() {
         Instant now = Instant.now();
-        List<JobEntity> dueJobs = jobRepo.findByStateAndScheduledAtBefore(JobState.PENDING, now);
+
+        // ✅ CHANGE: Find jobs that are PENDING and not yet queued
+        List<JobEntity> dueJobs = jobRepo.findByStateAndScheduledAtBeforeAndQueuedAtIsNull(
+                JobState.PENDING, now
+        );
 
         for (JobEntity job : dueJobs) {
             String redisKey = queueKey(job.getQueueType().name());
 
             try {
                 redisTemplate.opsForList().leftPush(redisKey, job.getId().toString());
-                job.setState(JobState.READY);
+
+                // ✅ CHANGE: Just mark as queued, don't change state
+                job.setQueuedAt(Instant.now());
+                job.setUpdatedAt(Instant.now());
                 jobRepo.save(job);
+
+                System.out.println("✅ Queued job " + job.getId() + " to Redis");
             } catch (Exception redisError) {
-                // Redis down: don’t lose job, just log and retry next round
+                // ✅ CHANGE: queuedAt stays null, will retry next cycle
                 System.err.println("⚠️ Redis unavailable, will retry job " + job.getId() + " later.");
             }
         }
     }
-
-
-
 }

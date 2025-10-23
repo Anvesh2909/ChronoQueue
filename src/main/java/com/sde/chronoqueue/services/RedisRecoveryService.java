@@ -23,13 +23,20 @@ public class RedisRecoveryService {
 
     @PostConstruct
     public void rebuildRedisQueues() {
-        List<JobEntity> recoverableJobs = jobRepo.findByStateIn(List.of(JobState.READY, JobState.PENDING));
+        // ✅ CHANGE: Only recover PENDING jobs that were queued before crash
+        List<JobEntity> recoverableJobs = jobRepo.findByStateAndQueuedAtIsNotNull(
+                JobState.PENDING
+        );
 
         for (JobEntity job : recoverableJobs) {
             try {
-                redisTemplate.opsForList().leftPush(queueKey(job.getQueueType().name()), job.getId().toString());
+                redisTemplate.opsForList().leftPush(
+                        queueKey(job.getQueueType().name()),
+                        job.getId().toString()
+                );
+                System.out.println("♻️ Recovered job " + job.getId() + " to Redis");
             } catch (Exception e) {
-                System.err.println("⚠️ Could not push job " + job.getId() + " back into Redis: " + e.getMessage());
+                System.err.println("⚠️ Could not recover job " + job.getId() + ": " + e.getMessage());
             }
         }
 
