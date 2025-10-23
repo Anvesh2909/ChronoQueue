@@ -57,6 +57,9 @@ public class JobEntity {
     @Column(name = "max_attempts")
     private Integer maxAttempts = 5;
 
+    @Column(unique = true)
+    private String idempotencyKey;
+
     /** ✅ Retry backoff config stored as plain text */
     @Column(name = "retry_backoff", columnDefinition = "text")
     private String retryBackoff = """
