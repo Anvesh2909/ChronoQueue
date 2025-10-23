@@ -1,243 +1,273 @@
-⚡ ChronoQueue — Distributed Job Scheduling Framework
-🚀 Overview
+# ChronoQueue ⚡
 
-ChronoQueue is a distributed delayed job scheduling framework — built with Spring Boot, Redis, and PostgreSQL.
+> A distributed delayed job scheduling framework built with Spring Boot, Redis, and PostgreSQL
 
-It’s designed to schedule, persist, and execute background jobs reliably — even when services crash, restart, or scale.
-Think of it as building your own version of Celery (Python) or Sidekiq (Ruby) — but focused on understanding the architecture, not just the APIs.
+[![Java](https://img.shields.io/badge/Java-17-orange.svg)](https://www.oracle.com/java/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.x-brightgreen.svg)](https://spring.io/projects/spring-boot)
+[![Redis](https://img.shields.io/badge/Redis-7.x-red.svg)](https://redis.io/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue.svg)](https://www.postgresql.org/)
 
-💡 What It Does
+## Table of Contents
 
-ChronoQueue takes in jobs that need to run in the future — for example:
+- [Overview](#overview)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Technologies](#technologies)
+- [Getting Started](#getting-started)
+- [API Usage](#api-usage)
+- [Job Lifecycle](#job-lifecycle)
+- [System Design](#system-design)
+- [Future Enhancements](#future-enhancements)
+- [License](#license)
 
-Send an email at a specific time
+## Overview
 
-Generate a report every few minutes
+ChronoQueue is a distributed job scheduling framework designed to schedule, persist, and execute background jobs reliably — even when services crash, restart, or scale. It handles delayed task execution with built-in retry mechanisms, priority-based scheduling, and fault tolerance.
 
-Trigger a webhook when data is ready
+**Use Cases:**
+- Send emails at specific times
+- Generate reports on schedules
+- Trigger webhooks when data is ready
+- Execute deferred tasks with priority ordering
 
-It queues, stores, and executes them automatically at the right time — handling retries, failures, and prioritization.
+## Features
 
-🎯 Why I Built It
+- **🔒 Persistent Storage** - PostgreSQL ensures no job is lost, even after system crashes
+- **⚡ Redis Queue** - Fast in-memory distributed queue for worker coordination
+- **📊 Priority Scheduling** - In-memory PriorityQueue (min-heap) for efficient job ordering
+- **🔄 Retry Mechanism** - Exponential backoff with configurable max attempts
+- **🛡️ Fault Tolerance** - Automatic recovery and state tracking across restarts
+- **🎯 Multiple Queue Types** - Support for different job categories (email, notifications, reports)
+- **🔐 Thread-Safe Execution** - Concurrent job processing with state management
 
-I built ChronoQueue to explore how real-world job scheduling systems work internally:
+## Architecture
 
-How can you reliably delay tasks?
+ChronoQueue consists of three core components:
 
-What happens if the system crashes mid-job?
+### 1. Job Creation API
+Accepts job requests via REST API and persists them to PostgreSQL.
 
-How do workers coordinate without stepping on each other?
+### 2. Scheduler Service
+Periodically scans for jobs ready to execute and pushes them to Redis queues.
 
-How can data structures (DSA) like priority queues be used for efficient scheduling?
+### 3. Worker Service
+Pulls jobs from Redis, maintains a priority queue in memory, and executes jobs at the scheduled time.
 
-Instead of using pre-built libraries, I built it from scratch to deeply understand:
+### System Flow
 
-“How distributed systems schedule work, maintain state, and recover from failure.”
-
-This project bridges algorithms + system design — turning DSA (PriorityQueue, backoff logic) into real backend infrastructure.
-
-🧠 Architecture Overview
-
-ChronoQueue is made of three main components:
-
-1️⃣ Job Creation API (JobService + JobController)
-
-Accepts new jobs via REST API
-
-Validates and stores job details in PostgreSQL
-
-Example payload:
-
-{
-"queueType": "EMAIL",
-"taskType": "email.send",
-"payload": {
-"userId": 42,
-"email": "user42@example.com",
-"template": "welcome"
-},
-"scheduledAt": "2025-10-22T11:30:00Z",
-"priority": 100,
-"maxAttempts": 3
-}
-
-
-Each job is stored in DB with state = PENDING.
-
-2️⃣ Scheduler Service
-
-Runs periodically (using @Scheduled).
-
-Picks jobs whose scheduledAt <= now() and state = PENDING.
-
-Pushes them into a Redis list (chrono:queue:<type>:ready).
-
-Acts like a bridge between persistent storage (DB) and fast distributed memory (Redis).
-
-🧩 Goal:
-Redis now acts as a shared queue — accessible by multiple worker nodes in future.
-
-3️⃣ Worker Service
-
-Periodically polls Redis and DB for ready jobs.
-
-Maintains a PriorityQueue (min-heap) in memory, ordered by:
-
-scheduledAt (earliest first)
-
-then by priority (higher first)
-
-Simulates job execution (mocked for now).
-
-Execution Logic:
-
-Marks job → RUNNING
-
-Simulates success/failure (60% success rate)
-
-On failure → retry with exponential backoff (5s, 10s, 20s...)
-
-Updates DB each time with state transitions:
-
-PENDING → RUNNING → SUCCEEDED
-
-or → FAILED → RETRY
-
-or → DEAD (after max attempts)
-
-This worker is the brain of the system — handling DSA-driven scheduling, retries, and state management.
-
-⚙️ How It Works (Flow Diagram)
+```mermaid
 sequenceDiagram
-participant API as JobController
-participant DB as PostgreSQL
-participant Redis as Redis Queue
-participant Scheduler as SchedulerService
-participant Worker as WorkerService
+    participant Client
+    participant API as JobController
+    participant DB as PostgreSQL
+    participant Redis
+    participant Scheduler as SchedulerService
+    participant Worker as WorkerService
 
-    API->>DB: Save new Job (state=PENDING)
-    Scheduler->>DB: Fetch PENDING jobs with time <= now
-    Scheduler->>Redis: Push job IDs to chrono:queue:<type>:ready
-    Worker->>Redis: Pop job IDs
+    Client->>API: POST /api/jobs
+    API->>DB: Save Job (PENDING)
+    API-->>Client: Job Created
+    
+    Scheduler->>DB: Fetch ready jobs
+    Scheduler->>Redis: Push to ready queue
+    
+    Worker->>Redis: Poll for jobs
     Worker->>DB: Fetch job details
     Worker->>Worker: Add to PriorityQueue
-    Worker->>Worker: Execute job at scheduled time
-    Worker->>DB: Update job state (RUNNING → SUCCEEDED/FAILED)
-    Worker->>DB: Retry with backoff if needed
+    Worker->>Worker: Execute at scheduled time
+    Worker->>DB: Update state (RUNNING→SUCCEEDED/FAILED)
+```
 
-🧩 Core Features
-Feature	Description
-Job Persistence	PostgreSQL stores all jobs with full metadata (state, attempts, retries).
-In-Memory Scheduling	Uses Java PriorityQueue (min-heap) for efficient job execution ordering.
-Fault Tolerance	DB ensures recovery after crashes — no job is lost.
-Retry System	Exponential backoff with max attempts logic.
-Redis Queue	Connects scheduler and worker asynchronously — ready for distributed scaling.
-Thread-safe Execution	Workers process only ready jobs at correct timestamps.
-Extensible Job Types	Supports multiple queues (email, notification, report).
-🧮 Data Structures & DSA Integration
+## Technologies
 
-ChronoQueue applies DSA concepts in real-world backend code:
+| Layer | Technology |
+|-------|-----------|
+| Backend Framework | Spring Boot 3.x (Java 17) |
+| Database | PostgreSQL 15 |
+| Cache/Queue | Redis 7.x |
+| ORM | Spring Data JPA / Hibernate |
+| Scheduler | Spring Task Scheduler |
+| Serialization | Jackson |
 
-DSA Concept	Real Usage
-Priority Queue (Heap)	Orders jobs by scheduledAt and priority efficiently (O(log n)).
-Exponential Backoff (Math logic)	Controls retry delay dynamically based on attempt count.
-State Machine (Enum)	Tracks job lifecycle through predictable transitions.
+## Getting Started
 
-Why this matters:
-Most developers only solve DSA problems — here, you’ve used them to design a live system.
+### Prerequisites
 
-🔁 Example Job Lifecycle
-State	Description
-PENDING	Job is waiting to be scheduled
-RUNNING	Worker is executing the job
-SUCCEEDED	Job completed successfully
-FAILED	Temporary error occurred
-RETRY	Scheduled again with delay
-DEAD	Max retries exceeded
-🔧 Technologies Used
-Layer	Stack
-Backend	Spring Boot (Java 17)
-Database	PostgreSQL (via JPA/Hibernate)
-Queue System	Redis
-Scheduler	Spring Task Scheduler
-Serialization	Jackson (JSON Mapper)
-DSA Concepts	PriorityQueue, Exponential Backoff
-🧱 Architecture Summary
-Component	Purpose
-JobController	Accepts API requests to create jobs
-JobService	Saves job with metadata and validation
-SchedulerService	Moves ready jobs from DB → Redis
-WorkerService	Pulls from Redis, runs via PriorityQueue
-PostgreSQL	Persistent storage for job state tracking
-Redis	Fast in-memory distributed queue
-⚙️ Design Principles
+- Java 17 or higher
+- PostgreSQL 15+
+- Redis 7+
+- Maven 3.6+
 
-Reliability First: Every job persisted before execution.
+### Installation
 
-Recoverable by Design: System resumes safely after restart.
+1. **Clone the repository**
+```bash
+git clone https://github.com/yourusername/chronoqueue.git
+cd chronoqueue
+```
 
-Decoupled Components: Job creation, scheduling, and execution separated.
+2. **Configure application properties**
+```properties
+# application.properties
+spring.datasource.url=jdbc:postgresql://localhost:5432/chronoqueue
+spring.datasource.username=your_username
+spring.datasource.password=your_password
 
-Extensible: Adding new queue types or executors is trivial.
+spring.redis.host=localhost
+spring.redis.port=6379
+```
 
-DSA-Driven: Algorithms power scheduling and retry logic.
+3. **Build the project**
+```bash
+mvn clean install
+```
 
-🧩 Future Enhancements
+4. **Run the application**
+```bash
+mvn spring-boot:run
+```
 
-🔒 Distributed Locks (for multi-worker scaling)
+## API Usage
 
-📈 Dashboard UI for job monitoring
+### Create a Job
 
-⚙️ Worker Pool System for concurrency limits
+**Endpoint:** `POST /api/jobs`
 
-📬 Custom Job Executors (HTTP calls, email, ML pipelines)
-
-🔁 Cron-based Recurring Jobs
-
-🧠 What I Learned
-
-How background schedulers like Celery, BullMQ, and Sidekiq actually work under the hood.
-
-How to connect PostgreSQL persistence + Redis coordination + in-memory DSA into one system.
-
-How to design for fault tolerance, retries, and recovery — not just happy paths.
-
-How algorithms and system design principles combine to create real-world reliability.
-
-🧩 Example Demo Flow
-
-Create a job from Postman:
-
-POST /api/jobs
-Content-Type: application/json
-
+**Request Body:**
+```json
 {
-"queueType": "EMAIL",
-"taskType": "email.send",
-"payload": { "email": "user@example.com" },
-"scheduledAt": "2025-10-22T11:30:00Z",
-"priority": 100,
-"maxAttempts": 3
+  "queueType": "EMAIL",
+  "taskType": "email.send",
+  "payload": {
+    "userId": 42,
+    "email": "user42@example.com",
+    "template": "welcome"
+  },
+  "scheduledAt": "2025-10-22T11:30:00Z",
+  "priority": 100,
+  "maxAttempts": 3
 }
+```
 
+**Response:**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "state": "PENDING",
+  "createdAt": "2025-10-22T10:00:00Z"
+}
+```
 
-Scheduler detects the job at correct time → pushes to Redis
+### Queue Types
 
-Worker picks it up → executes → retries or marks success
+- `EMAIL` - Email delivery jobs
+- `NOTIFICATION` - Push notifications
+- `REPORT` - Report generation
+- `WEBHOOK` - External API calls
 
-PostgreSQL logs every state transition
+## Job Lifecycle
 
-🏁 Summary
+```
+PENDING → RUNNING → SUCCEEDED
+    ↓         ↓
+    ↓      FAILED → RETRY → RUNNING
+    ↓                ↓
+    ↓              DEAD (max attempts exceeded)
+    ↓
+  DEAD (if skipped)
+```
 
-ChronoQueue isn’t about sending emails —
-it’s about mastering how jobs are scheduled, retried, and recovered across distributed systems.
-It demonstrates understanding of:
+| State | Description |
+|-------|-------------|
+| `PENDING` | Job is queued and waiting to be scheduled |
+| `RUNNING` | Worker is currently executing the job |
+| `SUCCEEDED` | Job completed successfully |
+| `FAILED` | Temporary error occurred during execution |
+| `RETRY` | Job scheduled for retry with exponential backoff |
+| `DEAD` | Maximum retry attempts exceeded |
 
-Algorithms (priority queues, backoff)
+## System Design
 
-System design (fault tolerance, decoupling)
+### Data Structures & Algorithms
 
-Practical reliability (state tracking, retry logic)
+ChronoQueue applies computer science fundamentals to solve real-world problems:
 
-It’s both a DSA-backed learning project and a miniature version of a real production scheduler —
-designed to showcase how an engineer thinks, not just codes.
+| Concept | Implementation | Benefit |
+|---------|---------------|---------|
+| **Priority Queue (Min-Heap)** | Orders jobs by `scheduledAt` and `priority` | O(log n) insertion and extraction |
+| **Exponential Backoff** | Retry delays: 5s → 10s → 20s → 40s | Prevents system overload during failures |
+| **State Machine** | Enum-based job lifecycle | Predictable state transitions |
+
+### Design Principles
+
+1. **Reliability First** - Every job is persisted before execution
+2. **Fault Tolerance** - System recovers gracefully from crashes
+3. **Decoupled Components** - Separation of concerns across services
+4. **Scalability Ready** - Redis enables horizontal worker scaling
+5. **Algorithm-Driven** - DSA concepts power core scheduling logic
+
+### Component Responsibilities
+
+```
+┌─────────────────┐
+│  JobController  │ ← REST API endpoint
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   JobService    │ ← Validation & persistence
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   PostgreSQL    │ ← Durable job storage
+└─────────────────┘
+         ▲
+         │
+         ▼
+┌─────────────────┐
+│ SchedulerService│ ← Scans & queues ready jobs
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│      Redis      │ ← Fast distributed queue
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  WorkerService  │ ← Executes jobs with priority queue
+└─────────────────┘
+```
+
+## Future Enhancements
+
+- [ ] **Distributed Locks** - Support multiple worker nodes with Redis locks
+- [ ] **Monitoring Dashboard** - Web UI for job tracking and metrics
+- [ ] **Worker Pool Management** - Configurable concurrency limits
+- [ ] **Custom Executors** - Pluggable job execution handlers
+- [ ] **Cron Jobs** - Support for recurring scheduled tasks
+- [ ] **Dead Letter Queue** - Advanced failure handling
+- [ ] **Rate Limiting** - Per-queue execution throttling
+- [ ] **Observability** - Prometheus metrics and distributed tracing
+
+## What This Project Demonstrates
+
+- Deep understanding of distributed systems architecture
+- Practical application of data structures and algorithms
+- Fault-tolerant system design patterns
+- State management in distributed environments
+- Experience with Spring Boot, Redis, and PostgreSQL
+- Ability to build production-grade infrastructure
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+**Built with ❤️ to understand how distributed job schedulers work under the hood**
