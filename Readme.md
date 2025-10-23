@@ -158,6 +158,53 @@ mvn spring-boot:run
 }
 ```
 
+### Get Job Status
+
+**Endpoint:** `GET /api/jobs/{id}`
+
+**Example:**
+```bash
+GET /api/jobs/550e8400-e29b-41d4-a716-446655440000
+```
+
+**Response:**
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "queueType": "EMAIL",
+  "taskType": "email.send",
+  "state": "RUNNING",
+  "attemptCount": 1,
+  "scheduledAt": "2025-10-22T11:30:00Z",
+  "createdAt": "2025-10-22T10:00:00Z"
+}
+```
+
+### Get All Jobs
+
+**Endpoint:** `GET /api/jobs`
+
+**Example:**
+```bash
+GET /api/jobs
+```
+
+**Response:**
+```json
+[
+  {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "state": "SUCCEEDED",
+    "createdAt": "2025-10-22T10:00:00Z"
+  },
+  {
+    "id": "660e9500-f30c-52e5-b827-557766551111",
+    "state": "PENDING",
+    "createdAt": "2025-10-22T10:15:00Z"
+  }
+]
+```
+
 ### Queue Types
 
 - `EMAIL` - Email delivery jobs
