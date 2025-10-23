@@ -14,6 +14,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
 
 @Service
 public class JobService {
@@ -69,5 +73,52 @@ public class JobService {
                 saved.getMaxAttempts(),
                 saved.getCreatedAt()
         );
+    }
+    @Transactional(readOnly = true)
+    public JobCreateResponse getJobStatus(UUID jobId) {
+        JobEntity job = jobRepo.findById(jobId)
+                .orElseThrow(() -> new RuntimeException("Job not found with ID: " + jobId));
+
+        Map<String, Object> payloadMap;
+        try {
+            payloadMap = objectMapper.readValue(job.getPayload(), new TypeReference<>() {});
+        } catch (JsonProcessingException e) {
+            payloadMap = Map.of();
+        }
+
+        return new JobCreateResponse(
+                job.getId(),
+                job.getQueueType(),
+                job.getTaskType(),
+                payloadMap,
+                job.getScheduledAt(),
+                job.getState(),
+                job.getPriority(),
+                job.getMaxAttempts(),
+                job.getCreatedAt()
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public List<JobCreateResponse> getAllJobs() {
+        return jobRepo.findAll().stream().map(job -> {
+            Map<String, Object> payloadMap;
+            try {
+                payloadMap = objectMapper.readValue(job.getPayload(), new TypeReference<>() {});
+            } catch (JsonProcessingException e) {
+                payloadMap = Map.of();
+            }
+            return new JobCreateResponse(
+                    job.getId(),
+                    job.getQueueType(),
+                    job.getTaskType(),
+                    payloadMap,
+                    job.getScheduledAt(),
+                    job.getState(),
+                    job.getPriority(),
+                    job.getMaxAttempts(),
+                    job.getCreatedAt()
+            );
+        }).collect(Collectors.toList());
     }
 }
