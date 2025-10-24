@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
@@ -22,31 +23,47 @@ public class SchedulerService {
         return "chrono:queue:" + queueType.toLowerCase() + ":ready";
     }
 
+    /**
+     * Move due jobs from DB to Redis queues
+     */
     @Scheduled(fixedRate = 5000)
+    @Transactional
     public void moveDueJobsToRedis() {
         Instant now = Instant.now();
 
-        // ✅ CHANGE: Find jobs that are PENDING and not yet queued
+        // Find jobs that are PENDING, due, and not yet queued
         List<JobEntity> dueJobs = jobRepo.findByStateAndScheduledAtBeforeAndQueuedAtIsNull(
                 JobState.PENDING, now
         );
+
+        int queued = 0;
+        int failed = 0;
 
         for (JobEntity job : dueJobs) {
             String redisKey = queueKey(job.getQueueType().name());
 
             try {
+                // Push to Redis
                 redisTemplate.opsForList().leftPush(redisKey, job.getId().toString());
 
-                // ✅ CHANGE: Just mark as queued, don't change state
+                // Mark as queued (but keep state as PENDING)
                 job.setQueuedAt(Instant.now());
                 job.setUpdatedAt(Instant.now());
                 jobRepo.save(job);
 
-                System.out.println("✅ Queued job " + job.getId() + " to Redis");
+                queued++;
+
             } catch (Exception redisError) {
-                // ✅ CHANGE: queuedAt stays null, will retry next cycle
-                System.err.println("⚠️ Redis unavailable, will retry job " + job.getId() + " later.");
+                // Redis is down - queuedAt stays null, will retry next cycle
+                System.err.println("⚠️ Redis unavailable, will retry job " + job.getId() +
+                        " in next cycle: " + redisError.getMessage());
+                failed++;
             }
+        }
+
+        if (queued > 0) {
+            System.out.println("📤 Scheduler queued " + queued + " jobs to Redis" +
+                    (failed > 0 ? " (" + failed + " failed)" : ""));
         }
     }
 }

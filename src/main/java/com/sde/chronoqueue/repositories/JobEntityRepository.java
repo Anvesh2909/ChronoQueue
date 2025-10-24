@@ -2,44 +2,48 @@ package com.sde.chronoqueue.repositories;
 
 import com.sde.chronoqueue.entities.JobEntity;
 import com.sde.chronoqueue.enums.JobState;
-import com.sde.chronoqueue.enums.QueueType;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Repository
 public interface JobEntityRepository extends JpaRepository<JobEntity, UUID> {
-    List<JobEntity> findByState(JobState state);
 
-    List<JobEntity> findByQueueType(QueueType queueType);
-    List<JobEntity> findByStateAndScheduledAtBefore(JobState state, Instant time);
-
-
-    @Query("""
-        SELECT j FROM JobEntity j
-        WHERE (:state IS NULL OR j.state = :state)
-        AND (:queueType IS NULL OR j.queueType = :queueType)
-        AND (:taskType IS NULL OR j.taskType = :taskType)
-        ORDER BY j.createdAt DESC
-    """)
-    List<JobEntity> findFiltered(
-            @Param("state") JobState state,
-            @Param("queueType") QueueType queueType,
-            @Param("taskType") String taskType
+    /**
+     * For scheduler: Find jobs that are due and not yet queued to Redis
+     */
+    List<JobEntity> findByStateAndScheduledAtBeforeAndQueuedAtIsNull(
+            JobState state, Instant before
     );
 
-    List<JobEntity> findByStateAndUpdatedAtBefore(JobState jobState, Instant now);
+    /**
+     * For recovery service: Find jobs that were queued but system crashed
+     */
+    List<JobEntity> findByStateAndQueuedAtIsNotNull(JobState state);
 
-    List<JobEntity> findByStateIn(List<JobState> ready);
+    /**
+     * For lease reaper: Find jobs with expired leases
+     */
+    List<JobEntity> findByStateAndLeaseExpiresAtBefore(JobState state, Instant before);
 
-    Iterable<JobEntity> findTop10ByStateOrderByScheduledAtAsc(JobState jobState);
+    /**
+     * For worker fallback: Fetch jobs that missed Redis queuing
+     */
+    List<JobEntity> findTop10ByStateAndQueuedAtIsNullAndScheduledAtBeforeOrderByPriorityDescScheduledAtAsc(
+            JobState state, Instant before
+    );
 
-    List<JobEntity> findByStateAndScheduledAtBeforeAndQueuedAtIsNull(JobState jobState, Instant now);
+    /**
+     * For heartbeat: Find all jobs owned by a specific worker
+     */
+    List<JobEntity> findByStateAndOwnerWorkerId(JobState state, String workerId);
 
-    List<JobEntity> findByStateAndQueuedAtIsNotNull(JobState jobState);
+    /**
+     * For idempotency check
+     */
+    Optional<JobEntity> findByIdempotencyKey(String idempotencyKey);
 }

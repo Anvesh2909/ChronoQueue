@@ -18,4 +18,3 @@ public record JobCreateResponse(
         Integer maxAttempts,
         Instant createdAt
 ) {}
-

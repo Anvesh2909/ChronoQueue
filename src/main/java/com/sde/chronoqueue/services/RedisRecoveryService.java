@@ -21,12 +21,21 @@ public class RedisRecoveryService {
         return "chrono:queue:" + queueType.toLowerCase() + ":ready";
     }
 
+    /**
+     * Rebuild Redis queues on application startup
+     * Recovers jobs that were queued before a crash
+     */
     @PostConstruct
     public void rebuildRedisQueues() {
-        // ✅ CHANGE: Only recover PENDING jobs that were queued before crash
+        System.out.println("🔄 Starting Redis queue recovery...");
+
+        // Only recover PENDING jobs that were queued before crash
         List<JobEntity> recoverableJobs = jobRepo.findByStateAndQueuedAtIsNotNull(
                 JobState.PENDING
         );
+
+        int recovered = 0;
+        int failed = 0;
 
         for (JobEntity job : recoverableJobs) {
             try {
@@ -34,12 +43,14 @@ public class RedisRecoveryService {
                         queueKey(job.getQueueType().name()),
                         job.getId().toString()
                 );
-                System.out.println("♻️ Recovered job " + job.getId() + " to Redis");
+                recovered++;
             } catch (Exception e) {
                 System.err.println("⚠️ Could not recover job " + job.getId() + ": " + e.getMessage());
+                failed++;
             }
         }
 
-        System.out.println("♻️ Redis queues rebuilt with " + recoverableJobs.size() + " jobs.");
+        System.out.println("♻️ Redis queues rebuilt: " + recovered + " jobs recovered" +
+                (failed > 0 ? ", " + failed + " failed" : ""));
     }
 }

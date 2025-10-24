@@ -1,468 +1,496 @@
 # ChronoQueue ⚡
 
-> A learning-focused distributed delayed job scheduling framework built with Spring Boot, Redis, and PostgreSQL
+> A distributed job scheduling system built with Spring Boot, Redis, and PostgreSQL
 
 [![Java](https://img.shields.io/badge/Java-17-orange.svg)](https://www.oracle.com/java/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.x-brightgreen.svg)](https://spring.io/projects/spring-boot)
 [![Redis](https://img.shields.io/badge/Redis-7.x-red.svg)](https://redis.io/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue.svg)](https://www.postgresql.org/)
 
-> **⚠️ Learning Project Notice:** This is an educational implementation to understand distributed job scheduling systems like Sidekiq, Celery, and Bull. It is **not production-ready** and intentionally omits certain complexities to focus on core concepts.
+## 📋 Table of Contents
 
-## Table of Contents
-
-- [Overview](#overview)
-- [Learning Objectives](#learning-objectives)
+- [About](#about)
 - [Features](#features)
-- [Architecture](#architecture)
-- [Technologies](#technologies)
+- [How It Works](#how-it-works)
+- [Technologies Used](#technologies-used)
 - [Getting Started](#getting-started)
 - [API Usage](#api-usage)
-- [Job Lifecycle](#job-lifecycle)
-- [System Design](#system-design)
-- [Design Trade-offs](#design-trade-offs)
+- [Architecture](#architecture)
+- [Key Concepts](#key-concepts)
 - [What I Learned](#what-i-learned)
-- [Future Enhancements](#future-enhancements)
-- [License](#license)
+- [Future Improvements](#future-improvements)
 
-## Overview
+## About
 
-ChronoQueue is a learning project that explores how distributed job scheduling frameworks work internally. It demonstrates core concepts like delayed task execution, priority-based scheduling, and fault tolerance through a simplified implementation.
+ChronoQueue is a background job scheduling system that allows you to schedule tasks to run at specific times or with delays. It's similar to systems like Sidekiq (Ruby), Celery (Python), or Bull (Node.js).
 
-**Inspired By:**
-- **Sidekiq** (Ruby) - Background job processing
-- **Celery** (Python) - Distributed task queue
-- **Bull** (Node.js) - Redis-based queue system
+**Real-world use cases:**
+- Send welcome emails after user registration
+- Generate daily/weekly reports
+- Send reminder notifications
+- Process background tasks without blocking the main application
 
-**Use Cases:**
-- Send emails at specific times
-- Generate reports on schedules
-- Trigger webhooks when data is ready
-- Execute deferred tasks with priority ordering
-
-## Learning Objectives
-
-This project was built to deeply understand:
-
-1. **Data Structures in Action** - How priority queues (min-heaps) enable efficient scheduling
-2. **Distributed Systems** - Coordination between multiple services using Redis and PostgreSQL
-3. **Fault Tolerance** - Recovery mechanisms when services crash or restart
-4. **State Machines** - Managing job lifecycle transitions
-5. **Retry Patterns** - Exponential backoff and failure handling
-6. **Trade-offs** - Balancing simplicity vs. production requirements
+**Project Goal:** Build a working distributed job scheduler to understand how background job processing works in production systems.
 
 ## Features
 
-- **🔒 Persistent Storage** - PostgreSQL ensures no job is lost, even after system crashes
-- **⚡ Redis Queue** - Fast in-memory distributed queue for worker coordination
-- **📊 Priority Scheduling** - In-memory PriorityQueue (min-heap) for efficient job ordering
-- **🔄 Retry Mechanism** - Exponential backoff with configurable max attempts
-- **🛡️ Fault Tolerance** - Automatic recovery and state tracking across restarts
-- **🎯 Multiple Queue Types** - Support for different job categories (email, notifications, reports)
-- **🧪 Lease-Based Recovery** - Detects and recovers stuck jobs using timeout mechanisms
+✅ **What's Implemented:**
+- Schedule jobs to run at specific times
+- Priority-based job execution (high priority jobs run first)
+- Automatic retry with exponential backoff on failures
+- Multiple worker instances can run simultaneously
+- Redis queues for fast job distribution
+- PostgreSQL for persistent job storage
+- Distributed locking to prevent duplicate job execution
+- Automatic recovery when workers crash
+- Job status tracking (PENDING → RUNNING → SUCCEEDED/FAILED/DEAD)
+- Idempotency keys to prevent duplicate jobs
 
-## Architecture
+## How It Works
 
-ChronoQueue consists of three core components:
+### Simple Flow
 
-### 1. Job Creation API
-Accepts job requests via REST API and persists them to PostgreSQL.
-
-### 2. Scheduler Service
-Periodically scans for jobs ready to execute and pushes them to Redis queues.
-
-### 3. Worker Service
-Pulls jobs from Redis, maintains a priority queue in memory, and executes jobs at the scheduled time.
-
-### System Flow
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API as JobController
-    participant DB as PostgreSQL
-    participant Redis
-    participant Scheduler as SchedulerService
-    participant Worker as WorkerService
-
-    Client->>API: POST /api/jobs
-    API->>DB: Save Job (PENDING)
-    API-->>Client: Job Created
-    
-    Scheduler->>DB: Fetch ready jobs
-    Scheduler->>Redis: Push to ready queue
-    
-    Worker->>Redis: Poll for jobs
-    Worker->>DB: Fetch job details
-    Worker->>Worker: Add to PriorityQueue
-    Worker->>Worker: Execute at scheduled time
-    Worker->>DB: Update state (RUNNING→SUCCEEDED/FAILED)
+```
+1. Client creates a job via REST API
+   ↓
+2. Job saved to PostgreSQL (state: PENDING)
+   ↓
+3. Scheduler finds jobs that are due
+   ↓
+4. Scheduler pushes job IDs to Redis queue
+   ↓
+5. Worker pulls job from Redis
+   ↓
+6. Worker acquires a "lease" on the job (distributed lock)
+   ↓
+7. Worker executes the job
+   ↓
+8. Worker updates job status (SUCCEEDED or FAILED)
 ```
 
-## Technologies
+### When Things Go Wrong
 
-| Layer | Technology |
-|-------|-----------|
-| Backend Framework | Spring Boot 3.x (Java 17) |
-| Database | PostgreSQL 15 |
-| Cache/Queue | Redis 7.x |
-| ORM | Spring Data JPA / Hibernate |
-| Scheduler | Spring Task Scheduler |
-| Serialization | Jackson |
+**If a worker crashes while processing:**
+- The job has a `leaseExpiresAt` timestamp
+- LeaseReaperService detects expired leases
+- Job is automatically requeued for retry
+
+**If Redis goes down:**
+- Scheduler can't push to Redis
+- Workers fall back to querying database directly
+- System continues working (a bit slower)
+
+**If job fails:**
+- Automatic retry with exponential backoff (5s → 10s → 20s → 40s...)
+- After max attempts, job marked as DEAD
+
+## Technologies Used
+
+| Technology | Why I Used It |
+|-----------|---------------|
+| **Spring Boot 3.x** | Main framework - handles REST APIs, scheduling, dependency injection |
+| **PostgreSQL** | Stores jobs persistently - survives crashes and restarts |
+| **Redis** | Fast in-memory queue for distributing jobs to workers |
+| **Spring Data JPA** | Simplified database operations |
+| **Jackson** | JSON serialization for job payloads |
+| **Lombok** | Reduced boilerplate code |
 
 ## Getting Started
 
 ### Prerequisites
 
-- Java 17 or higher
-- PostgreSQL 15+
-- Redis 7+
-- Maven 3.6+
+```bash
+- Java 17
+- PostgreSQL 15
+- Redis 7
+- Maven
+```
 
-### Installation
+### Installation Steps
 
-1. **Clone the repository**
+**1. Install PostgreSQL and Redis**
+```bash
+# On Ubuntu/Debian
+sudo apt install postgresql redis-server
+
+# On Mac
+brew install postgresql redis
+
+# Or use Docker
+docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:15
+docker run -d -p 6379:6379 redis:7
+```
+
+**2. Clone and configure**
 ```bash
 git clone https://github.com/yourusername/chronoqueue.git
 cd chronoqueue
 ```
 
-2. **Configure application properties**
-```properties
-# application.properties
-spring.datasource.url=jdbc:postgresql://localhost:5432/chronoqueue
-spring.datasource.username=your_username
-spring.datasource.password=your_password
-
-spring.redis.host=localhost
-spring.redis.port=6379
+**3. Update `application.yml`**
+```yaml
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/chronoqueue
+    username: postgres
+    password: postgres
+  data:
+    redis:
+      host: localhost
+      port: 6379
 ```
 
-3. **Build the project**
+**4. Run the application**
 ```bash
 mvn clean install
+mvn spring-boot:run
 ```
 
-4. **Run the application**
+**5. Test with multiple workers (optional)**
 ```bash
-mvn spring-boot:run
+# Terminal 1
+mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=8080
+
+# Terminal 2
+mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=8081
 ```
 
 ## API Usage
 
 ### Create a Job
 
-**Endpoint:** `POST /api/jobs`
+**POST** `http://localhost:8080/api/jobs`
 
-**Request Body:**
 ```json
 {
   "queueType": "EMAIL",
   "taskType": "email.send",
   "payload": {
-    "userId": 42,
-    "email": "user42@example.com",
-    "template": "welcome"
+    "userId": 123,
+    "email": "user@example.com",
+    "message": "Welcome to our platform!"
   },
-  "scheduledAt": "2025-10-22T11:30:00Z",
+  "scheduledAt": "2025-10-24T18:00:00Z",
   "priority": 100,
-  "maxAttempts": 3
+  "maxAttempts": 5,
+  "idempotencyKey": "welcome-email-user-123"
 }
 ```
-
-**Response:**
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "state": "PENDING",
-  "createdAt": "2025-10-22T10:00:00Z"
-}
-```
-
-### Get Job Status
-
-**Endpoint:** `GET /api/jobs/{id}`
 
 **Response:**
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "queueType": "EMAIL",
-  "taskType": "email.send",
-  "state": "RUNNING",
-  "attemptCount": 1,
-  "scheduledAt": "2025-10-22T11:30:00Z",
-  "createdAt": "2025-10-22T10:00:00Z"
+  "state": "PENDING",
+  "priority": 100,
+  "createdAt": "2025-10-24T17:00:00Z",
+  "scheduledAt": "2025-10-24T18:00:00Z"
+}
+```
+
+### Check Job Status
+
+**GET** `http://localhost:8080/api/jobs/{jobId}`
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "queueType": "EMAIL",
+  "state": "SUCCEEDED",
+  "attempts": 1,
+  "createdAt": "2025-10-24T17:00:00Z"
 }
 ```
 
 ### Get All Jobs
 
-**Endpoint:** `GET /api/jobs`
+**GET** `http://localhost:8080/api/jobs`
 
-### Queue Types
+## Architecture
 
-- `EMAIL` - Email delivery jobs
-- `NOTIFICATION` - Push notifications
-- `REPORT` - Report generation
-- `WEBHOOK` - External API calls
-
-## Job Lifecycle
-
-```
-PENDING → RUNNING → SUCCEEDED
-    ↓         ↓
-    ↓      FAILED (retry scheduled)
-    ↓         ↓
-    ↓      PENDING (retry attempt)
-    ↓         ↓
-    ↓      DEAD (max attempts exceeded)
-```
-
-| State | Description |
-|-------|-------------|
-| `PENDING` | Job is queued and waiting to be scheduled |
-| `RUNNING` | Worker is currently executing the job |
-| `SUCCEEDED` | Job completed successfully |
-| `FAILED` | Temporary error occurred during execution |
-| `DEAD` | Maximum retry attempts exceeded |
-
-## System Design
-
-### Data Structures & Algorithms
-
-ChronoQueue applies computer science fundamentals to solve real-world problems:
-
-| Concept | Implementation | Benefit |
-|---------|---------------|---------|
-| **Priority Queue (Min-Heap)** | Orders jobs by `scheduledAt` and `priority` | O(log n) insertion and extraction |
-| **Exponential Backoff** | Retry delays: 5s → 10s → 20s → 40s | Prevents system overload during failures |
-| **State Machine** | Enum-based job lifecycle | Predictable state transitions |
-| **Polling Pattern** | Periodic database & Redis checks | Simple coordination mechanism |
-
-### Design Principles
-
-1. **Reliability First** - Every job is persisted before execution
-2. **Fault Tolerance** - System recovers gracefully from crashes
-3. **Decoupled Components** - Separation of concerns across services
-4. **Algorithm-Driven** - DSA concepts power core scheduling logic
-5. **Simplicity Over Scale** - Focus on understanding over optimization
-
-### Component Responsibilities
+### Components
 
 ```
 ┌─────────────────┐
-│  JobController  │ ← REST API endpoint
+│  REST API       │ ← Client creates jobs
+│  (JobService)   │
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│   JobService    │ ← Validation & persistence
+│  PostgreSQL     │ ← Jobs stored here (source of truth)
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│   PostgreSQL    │ ← Durable job storage
+│SchedulerService │ ← Scans for due jobs every 5 seconds
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│     Redis       │ ← Fast queue (job IDs pushed here)
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ WorkerService   │ ← Pulls jobs, executes them
 └─────────────────┘
-         ▲
          │
          ▼
 ┌─────────────────┐
-│ SchedulerService│ ← Scans & queues ready jobs
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│      Redis      │ ← Fast distributed queue
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  WorkerService  │ ← Executes jobs with priority queue
+│LeaseReaperService│ ← Recovers stuck jobs
 └─────────────────┘
 ```
 
-## Design Trade-offs
+### Job Lifecycle
 
-### What I Simplified (vs. Production Systems)
-
-| Aspect | This Project | Production Systems |
-|--------|-------------|-------------------|
-| **Concurrency Control** | Single worker assumption, `PriorityQueue` (not thread-safe) | `PriorityBlockingQueue`, distributed locks (Redis SETNX, PostgreSQL advisory locks) |
-| **Job Deduplication** | No duplicate prevention | Idempotency keys, unique constraints |
-| **Queue Coordination** | Polling every 3-5 seconds | Event-driven architecture (Redis pub/sub, webhooks) |
-| **State Persistence** | Direct DB writes in worker | Transactional outbox pattern, event sourcing |
-| **Lease Management** | Basic timeout detection | Heartbeat mechanisms, distributed consensus |
-| **Scalability** | Single instance focus | Horizontal scaling with consistent hashing |
-| **Observability** | Console logging | Prometheus metrics, distributed tracing (OpenTelemetry) |
-
-### Known Limitations
-
-#### 1. **Race Conditions Without Distributed Locks**
-```java
-// WorkerService.java
-private final PriorityQueue<JobEntity> jobQueue = new PriorityQueue<>(...);
-
-/**
- * ⚠️ Learning Note: PriorityQueue is not thread-safe.
- * Multiple workers would cause race conditions without coordination.
- * Production fix: Use PriorityBlockingQueue + Redis distributed locks (Redisson).
- */
+```
+PENDING ──┐
+          │
+          ├─► RUNNING ──┐
+          │             │
+          │             ├─► SUCCEEDED ✅
+          │             │
+          │             ├─► PENDING (retry with backoff) 🔁
+          │             │
+          │             └─► DEAD (max attempts) ❌
 ```
 
-**Impact:** Multiple worker instances would pick up the same jobs.  
-**Learning:** Understood why tools like Redisson exist for distributed coordination.
+### Running Multiple Workers
 
-#### 2. **Polling Inefficiency**
-```java
-@Scheduled(fixedRate = 3000)
-public void fetchAndQueueJobs() { ... }
+When you run 3 instances:
+
+```
+Worker 1 (port 8080)    Worker 2 (port 8081)    Worker 3 (port 8082)
+      │                        │                        │
+      └────────────────────────┼────────────────────────┘
+                               │
+                    ┌──────────┴──────────┐
+                    │                     │
+              PostgreSQL              Redis
 ```
 
-**Impact:** 3-second delay for job execution + constant CPU usage.  
-**Learning:** Event-driven architectures (Redis blocking operations, pub/sub) are more efficient.
+**Key Point:** All workers share the same database and Redis, but they don't step on each other's toes because of **distributed locking**.
 
-#### 3. **No Exactly-Once Semantics**
-- Jobs can execute multiple times on failure recovery
-- No idempotency key enforcement
+## Key Concepts
 
-**Learning:** Distributed systems need idempotency at the application level.
+### 1. Distributed Locking
 
-#### 4. **READY State Creates Job Orphaning**
+**Problem:** If 2 workers pull the same job from Redis, both might process it.
+
+**Solution:**
 ```java
-// SchedulerService.java
-job.setState(JobState.READY);  // Set to READY
-jobRepo.save(job);
-redisTemplate.opsForList().leftPush(redisKey, job.getId().toString());
-
-// WorkerService.java
-jobRepo.findTop10ByStateOrderByScheduledAtAsc(JobState.PENDING)  // Only looks for PENDING!
+@Transactional
+public boolean acquireLease(JobEntity job) {
+    // Re-fetch job from database
+    JobEntity fresh = jobRepo.findById(job.getId()).get();
+    
+    // Check if still PENDING
+    if (fresh.getState() != JobState.PENDING) {
+        return false; // Another worker already claimed it
+    }
+    
+    // Claim it atomically
+    fresh.setState(JobState.RUNNING);
+    fresh.setOwnerWorkerId(workerId);
+    fresh.setLeaseExpiresAt(now + 30 seconds);
+    jobRepo.save(fresh);
+    
+    return true;
+}
 ```
 
-**Problem:** Jobs transition to `READY` state but workers only process `PENDING` jobs. If Redis push fails after state change, the job is permanently orphaned.
+Only one worker succeeds in changing state from PENDING → RUNNING. Others fail and skip the job.
 
-**Impact:** Jobs stuck in READY state are never executed.
+### 2. Lease Management
 
-**Learning:**
-- State transitions must be atomic with queue operations
-- Intermediate states add complexity without value
-- Production fix: Remove READY state entirely, use `queuedAt` timestamp instead:
-  ```java
-  job.setQueuedAt(Instant.now());  // Simple flag, no state change
-  jobRepo.save(job);
-  ```
+Workers claim jobs with a 30-second "lease". Every 10 seconds, they send a heartbeat to extend it:
 
-### What I'd Add for Production
+```java
+@Scheduled(fixedRate = 10000)
+public void sendHeartbeat() {
+    // Extend lease for all my jobs
+    for (JobEntity job : myJobs) {
+        job.setLeaseExpiresAt(now + 30 seconds);
+        jobRepo.save(job);
+    }
+}
+```
 
-1. **Distributed Locks**
-    - Redis `SETNX` with expiration for job claiming
-    - PostgreSQL advisory locks as fallback
+If a worker crashes, it stops sending heartbeats. After 30 seconds, the lease expires and LeaseReaperService requeues the job.
 
-2. **Idempotency**
-   ```java
-   @Column(unique = true)
-   private String idempotencyKey;
-   ```
+### 3. Exponential Backoff
 
-3. **Dead Letter Queue**
-    - Separate queue for permanently failed jobs
-    - Manual retry mechanism
+When jobs fail, we don't retry immediately:
 
-4. **Event-Driven Coordination**
-   ```java
-   // Replace polling with blocking pop
-   String jobId = redisTemplate.opsForList()
-       .rightPop(queueKey, 5, TimeUnit.SECONDS);
-   ```
+```
+Attempt 1 fails → Wait 5 seconds
+Attempt 2 fails → Wait 10 seconds
+Attempt 3 fails → Wait 20 seconds
+Attempt 4 fails → Wait 40 seconds
+Attempt 5 fails → Mark as DEAD
+```
 
-5. **Observability**
-    - Micrometer metrics for job throughput, queue depth
-    - Distributed tracing with Spring Cloud Sleuth
+This prevents overwhelming external services with retry spam.
 
-6. **Proper Transaction Management**
-   ```java
-   @Transactional
-   public void processJob(JobEntity job) { ... }
-   ```
+### 4. Idempotency
+
+If a client sends the same job creation request twice:
+
+```java
+if (request.idempotencyKey() != null) {
+    Optional<JobEntity> existing = jobRepo.findByIdempotencyKey(key);
+    if (existing.isPresent()) {
+        return existing.get(); // Return existing job, don't create duplicate
+    }
+}
+```
+
+Same `idempotencyKey` = same job. Only created once.
+
+### 5. Thread Safety
+
+The in-memory job queue is accessed by multiple scheduled methods:
+
+```java
+// Thread-safe collections
+private final Queue<JobEntity> jobQueue = new ConcurrentLinkedQueue<>();
+private final Set<UUID> queuedJobIds = Collections.synchronizedSet(new HashSet<>());
+```
+
+`ConcurrentLinkedQueue` allows multiple threads to add/remove safely without corruption.
 
 ## What I Learned
 
-### Technical Insights
+### Technical Skills
 
-1. **Priority Queues Are Powerful**  
-   Using a min-heap reduced job sorting from O(n log n) to O(log n) per insertion. This is why job schedulers use heaps internally.
+1. **Spring Boot Scheduling** - Used `@Scheduled` annotations for periodic tasks
+2. **Database Transactions** - Learned when to use `@Transactional` to prevent race conditions
+3. **Redis Operations** - Used Redis lists (LPUSH/RPOP) for queue management
+4. **Concurrency** - Understood thread-safe collections and synchronization
+5. **State Machines** - Designed clear state transitions for job lifecycle
+6. **Distributed Systems Basics** - Learned about distributed locking, leases, and fault tolerance
 
-2. **Redis + PostgreSQL Synergy**  
-   Redis provides speed, PostgreSQL provides durability. The dual-layer approach balances performance and reliability.
+### Design Decisions
 
-3. **Fault Tolerance Is Hard**  
-   Even with recovery mechanisms (lease reaper, Redis rebuilds), edge cases exist. Production systems use complex consensus algorithms (Raft, Paxos).
+**Why Redis + PostgreSQL?**
+- PostgreSQL = Durable storage (survives crashes)
+- Redis = Fast distribution (low latency)
+- Together = Best of both worlds
 
-4. **State Machines Need Discipline**  
-   Ambiguous state transitions cause bugs. Every state change needs clear ownership.
+**Why distributed locking?**
+- Multiple workers need to coordinate
+- Can't rely on shared memory (separate processes)
+- Database provides atomic operations we need
 
-5. **Distributed Systems Are About Trade-offs**  
-   Consistency vs. availability, latency vs. throughput, simplicity vs. correctness—every decision has costs.
+**Why exponential backoff?**
+- Fixed delays don't work well
+- Too fast = overwhelm failing services
+- Exponential = give services time to recover
 
-### Conceptual Understanding
+### Problems I Solved
 
-- **Why Sidekiq Uses Redis:** In-memory queues are orders of magnitude faster than database polling
-- **Why Temporal Exists:** Coordinating distributed workflows requires sophisticated orchestration
-- **Why Idempotency Matters:** Network failures mean operations can execute multiple times
-- **Why Observability Is Critical:** Without metrics, debugging distributed systems is impossible
+**Problem 1: Race Conditions**
+- Initial code used `PriorityQueue` (not thread-safe)
+- Fixed by using `ConcurrentLinkedQueue`
 
-## Future Enhancements
+**Problem 2: Jobs Processed Twice**
+- Multiple workers pulled same job from Redis
+- Fixed with `acquireLease()` distributed lock
 
-**Next Learning Steps:**
+**Problem 3: Lost Jobs on Crash**
+- Workers crashed, jobs stuck forever
+- Fixed with `LeaseReaperService` checking expired leases
 
-- [ ] **Redisson Integration** - Add distributed locks for multi-worker support
-- [ ] **Integration Tests** - Validate job execution across service restarts
-- [ ] **Metrics Dashboard** - Expose Prometheus metrics for queue depth, success rates
-- [ ] **Event-Driven Scheduler** - Replace polling with Redis pub/sub
-- [ ] **Transactional Processing** - Proper `@Transactional` boundaries in worker
-- [ ] **Cron Jobs** - Support recurring scheduled tasks with cron expressions
-- [ ] **Custom Executors** - Plugin system for different job types
+**Problem 4: Redis Downtime**
+- System broke when Redis unavailable
+- Fixed with database fallback query
 
-**Production Readiness Checklist** (Not Implemented):
-- [ ] Circuit breakers for external dependencies
-- [ ] Rate limiting per queue type
-- [ ] Health checks and readiness probes
-- [ ] Graceful shutdown handling
-- [ ] Connection pooling optimization
-- [ ] Security (authentication, input validation)
+## Future Improvements
 
-## What This Project Demonstrates
+**Things I want to add:**
+- [ ] Web UI to view job status and queue depths
+- [ ] Metrics (how many jobs succeeded/failed per hour)
+- [ ] Support for cron-like recurring jobs
+- [ ] Job dependencies (Job B runs only after Job A succeeds)
+- [ ] Dead letter queue for manual inspection of failed jobs
+- [ ] Better error messages and logging
+- [ ] Integration tests
 
-### For Interviewers
+**If I were building this for production:**
+- Add proper monitoring (Prometheus + Grafana)
+- Implement circuit breakers for external API calls
+- Add authentication/authorization
+- Use connection pooling for better performance
+- Add rate limiting per queue type
+- Implement graceful shutdown handling
+- Add more comprehensive error handling
 
-This project shows I can:
+## Project Structure
 
-- **Apply DSA Concepts:** Used priority queues where appropriate, not just "whatever works"
-- **Think in Distributed Systems:** Designed for failures, not just happy paths
-- **Understand Trade-offs:** Made conscious decisions about simplicity vs. completeness
-- **Study Real Systems:** Reverse-engineered production tools to learn architecture
-- **Communicate Complexity:** Can explain technical decisions and limitations clearly
+```
+chronoqueue/
+├── src/main/java/com/sde/chronoqueue/
+│   ├── entities/
+│   │   └── JobEntity.java          # Database model
+│   ├── enums/
+│   │   ├── JobState.java           # PENDING, RUNNING, etc.
+│   │   └── QueueType.java          # EMAIL, NOTIFICATION, etc.
+│   ├── dtos/
+│   │   ├── JobCreateRequest.java   # API request format
+│   │   └── JobCreateResponse.java  # API response format
+│   ├── repositories/
+│   │   └── JobEntityRepository.java # Database queries
+│   ├── services/
+│   │   ├── JobService.java          # Job creation/query API
+│   │   ├── SchedulerService.java    # Moves jobs to Redis
+│   │   ├── WorkerService.java       # Executes jobs
+│   │   ├── LeaseReaperService.java  # Recovery service
+│   │   └── RedisRecoveryService.java # Startup recovery
+│   └── ChronoQueueApplication.java  # Main class
+├── application.yml                   # Configuration
+└── pom.xml                          # Dependencies
+```
 
-### Beyond CRUD
+## Common Issues
 
-While typical student projects focus on basic CRUD operations, ChronoQueue explores:
+**Issue: "Connection refused to PostgreSQL"**
+```bash
+# Make sure PostgreSQL is running
+sudo systemctl start postgresql
 
-- Background job processing patterns
-- State machine design
-- Distributed coordination challenges
-- Retry and backoff strategies
-- Fault tolerance mechanisms
+# Or if using Docker
+docker start postgres-container
+```
 
-## Contributing
+**Issue: "Connection refused to Redis"**
+```bash
+# Make sure Redis is running
+sudo systemctl start redis
 
-This is a learning project, but suggestions and improvements are welcome! Feel free to open issues or submit pull requests.
+# Or if using Docker
+docker start redis-container
+```
 
-## License
+**Issue: Jobs stuck in PENDING**
+- Check if SchedulerService is running (look for logs)
+- Check if Redis is accessible
+- Verify `scheduledAt` time is in the past
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+**Issue: Jobs not processing**
+- Check if WorkerService is running (look for "⚙️ Executing job" logs)
+- Verify Redis has job IDs (`redis-cli` → `LLEN chrono:queue:email:ready`)
+
+## Acknowledgments
+
+Inspired by:
+- **Sidekiq** - Ruby background job processor
+- **Celery** - Python distributed task queue
+- **Bull** - Node.js Redis-based queue
+
+Built as a learning project to understand how distributed job schedulers work.
 
 ---
 
-**Built with curiosity 🧠 to understand how distributed job schedulers work under the hood**
-
-*"The best way to learn is to build it yourself, even if imperfectly."*
+**Made by an engineering graduate trying to understand distributed systems 🎓**

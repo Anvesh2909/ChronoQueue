@@ -12,12 +12,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
-
 
 @Service
 public class JobService {
@@ -31,6 +30,16 @@ public class JobService {
 
     @Transactional
     public JobCreateResponse createJob(JobCreateRequest request) {
+        // Check idempotency - if job already exists, return existing
+        if (request.idempotencyKey() != null) {
+            Optional<JobEntity> existing = jobRepo.findByIdempotencyKey(request.idempotencyKey());
+            if (existing.isPresent()) {
+                System.out.println("⚠️ Duplicate job creation prevented by idempotency key: " +
+                        request.idempotencyKey());
+                return mapToResponse(existing.get());
+            }
+        }
+
         String payloadJson;
         try {
             payloadJson = objectMapper.writeValueAsString(request.payload());
@@ -45,40 +54,38 @@ public class JobService {
                 .scheduledAt(request.scheduledAt())
                 .priority(Optional.ofNullable(request.priority()).orElse(100))
                 .maxAttempts(Optional.ofNullable(request.maxAttempts()).orElse(5))
+                .idempotencyKey(request.idempotencyKey())
                 .state(JobState.PENDING)
                 .archived(false)
                 .build();
 
-        // ✅ Explicitly set timestamps
         job.setCreatedAt(Instant.now());
         job.setUpdatedAt(Instant.now());
 
         JobEntity saved = jobRepo.save(job);
 
-        Map<String, Object> payloadMap;
-        try {
-            payloadMap = objectMapper.readValue(saved.getPayload(), new TypeReference<>() {});
-        } catch (JsonProcessingException e) {
-            payloadMap = Map.of();
-        }
+        System.out.println("✅ Created job " + saved.getId() +
+                " [queue=" + saved.getQueueType() +
+                ", scheduled=" + saved.getScheduledAt() + "]");
 
-        return new JobCreateResponse(
-                saved.getId(),
-                saved.getQueueType(),
-                saved.getTaskType(),
-                payloadMap,
-                saved.getScheduledAt(),
-                saved.getState(),
-                saved.getPriority(),
-                saved.getMaxAttempts(),
-                saved.getCreatedAt()
-        );
+        return mapToResponse(saved);
     }
+
     @Transactional(readOnly = true)
     public JobCreateResponse getJobStatus(UUID jobId) {
         JobEntity job = jobRepo.findById(jobId)
                 .orElseThrow(() -> new RuntimeException("Job not found with ID: " + jobId));
+        return mapToResponse(job);
+    }
 
+    @Transactional(readOnly = true)
+    public List<JobCreateResponse> getAllJobs() {
+        return jobRepo.findAll().stream()
+                .map(this::mapToResponse)
+                .collect(Collectors.toList());
+    }
+
+    private JobCreateResponse mapToResponse(JobEntity job) {
         Map<String, Object> payloadMap;
         try {
             payloadMap = objectMapper.readValue(job.getPayload(), new TypeReference<>() {});
@@ -97,28 +104,5 @@ public class JobService {
                 job.getMaxAttempts(),
                 job.getCreatedAt()
         );
-    }
-
-    @Transactional(readOnly = true)
-    public List<JobCreateResponse> getAllJobs() {
-        return jobRepo.findAll().stream().map(job -> {
-            Map<String, Object> payloadMap;
-            try {
-                payloadMap = objectMapper.readValue(job.getPayload(), new TypeReference<>() {});
-            } catch (JsonProcessingException e) {
-                payloadMap = Map.of();
-            }
-            return new JobCreateResponse(
-                    job.getId(),
-                    job.getQueueType(),
-                    job.getTaskType(),
-                    payloadMap,
-                    job.getScheduledAt(),
-                    job.getState(),
-                    job.getPriority(),
-                    job.getMaxAttempts(),
-                    job.getCreatedAt()
-            );
-        }).collect(Collectors.toList());
     }
 }

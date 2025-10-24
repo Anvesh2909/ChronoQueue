@@ -11,6 +11,6 @@ public record JobCreateRequest(
         Map<String, Object> payload,
         Instant scheduledAt,
         Integer priority,
-        Integer maxAttempts
+        Integer maxAttempts,
+        String idempotencyKey
 ) {}
-

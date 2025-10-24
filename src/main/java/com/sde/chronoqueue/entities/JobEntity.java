@@ -10,7 +10,11 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(name = "jobs")
+@Table(name = "jobs", indexes = {
+        @Index(name = "idx_job_processing", columnList = "state,scheduledAt,priority"),
+        @Index(name = "idx_lease_expiry", columnList = "state,leaseExpiresAt"),
+        @Index(name = "idx_queued_jobs", columnList = "state,queuedAt")
+})
 @Getter
 @Setter
 @NoArgsConstructor
@@ -30,7 +34,6 @@ public class JobEntity {
     @Column(name = "task_type", nullable = false)
     private String taskType;
 
-    /** ✅ Store as TEXT instead of JSONB */
     @Column(columnDefinition = "text", nullable = false)
     private String payload;
 
@@ -41,17 +44,19 @@ public class JobEntity {
     private Instant scheduledAt;
 
     @Column(name = "created_at", nullable = false)
-    private Instant createdAt = Instant.now();
+    private Instant createdAt;
 
     @Column(name = "updated_at", nullable = false)
-    private Instant updatedAt = Instant.now();
+    private Instant updatedAt;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private JobState state = JobState.PENDING;
 
+    @Column(nullable = false)
     private Integer priority = 100;
 
+    @Column(nullable = false)
     private Integer attempts = 0;
 
     @Column(name = "max_attempts")
@@ -63,16 +68,14 @@ public class JobEntity {
     @Column(name = "queued_at")
     private Instant queuedAt;
 
-    /** ✅ Retry backoff config stored as plain text */
     @Column(name = "retry_backoff", columnDefinition = "text")
     private String retryBackoff = """
-        {"type":"exponential","initial_delay_seconds":60,"max_delay_seconds":86400}
+        {"type":"exponential","initial_delay_seconds":5,"max_delay_seconds":86400}
         """;
 
-    @Column(name = "last_error")
+    @Column(name = "last_error", columnDefinition = "text")
     private String lastError;
 
-    /** ✅ Store as TEXT instead of JSONB */
     @Column(name = "last_error_payload", columnDefinition = "text")
     private String lastErrorPayload = "{}";
 
@@ -87,4 +90,19 @@ public class JobEntity {
 
     @Column(nullable = false)
     private Boolean archived = false;
+
+    @PrePersist
+    protected void onCreate() {
+        if (createdAt == null) {
+            createdAt = Instant.now();
+        }
+        if (updatedAt == null) {
+            updatedAt = Instant.now();
+        }
+    }
+
+    @PreUpdate
+    protected void onUpdate() {
+        updatedAt = Instant.now();
+    }
 }
