@@ -46,4 +46,6 @@ public interface JobEntityRepository extends JpaRepository<JobEntity, UUID> {
      * For idempotency check
      */
     Optional<JobEntity> findByIdempotencyKey(String idempotencyKey);
+
+    List<JobEntity> findByStateAndMaxLeaseDeadlineBefore(JobState jobState, Instant now);
 }

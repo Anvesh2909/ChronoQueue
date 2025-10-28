@@ -1,0 +1,26 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/chronoqueue
+      DB_USERNAME: anvesh-yadav
+      DB_PASSWORD: 123456789
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: chronoqueue
+      POSTGRES_USER: anvesh-yadav
+      POSTGRES_PASSWORD: 123456789
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  postgres-data:

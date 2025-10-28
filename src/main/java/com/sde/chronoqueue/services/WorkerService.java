@@ -24,35 +24,27 @@ public class WorkerService {
     private final ObjectMapper objectMapper;
 
     private final String workerId = UUID.randomUUID().toString();
-
-    // Thread-safe queue for in-memory job processing
     private final Queue<JobEntity> jobQueue = new ConcurrentLinkedQueue<>();
-
-    // Track jobs already in queue to prevent duplicates
     private final Set<UUID> queuedJobIds = Collections.synchronizedSet(new HashSet<>());
+
+    private static final int LEASE_DURATION_SECONDS = 30;
+    private static final int MAX_EXECUTION_SECONDS = 300; // 5 minutes max
 
     private String queueKey(String queueType) {
         return "chrono:queue:" + queueType.toLowerCase() + ":ready";
     }
 
-    /**
-     * Poll Redis & DB to refill in-memory queue
-     */
     @Scheduled(fixedRate = 3000)
     public void fetchAndQueueJobs() {
-        // 1. Try Redis first (fast path)
         for (String queue : new String[]{"EMAIL", "NOTIFICATION", "REPORT"}) {
             String redisKey = queueKey(queue);
 
-            // Pop multiple jobs at once for efficiency
             for (int i = 0; i < 10; i++) {
                 String jobId = redisTemplate.opsForList().rightPop(redisKey);
                 if (jobId == null) break;
 
                 try {
                     UUID uuid = UUID.fromString(jobId);
-
-                    // Skip if already in our queue
                     if (queuedJobIds.contains(uuid)) continue;
 
                     jobRepo.findById(uuid)
@@ -67,11 +59,10 @@ public class WorkerService {
             }
         }
 
-        // 2. DB fallback for missed jobs (Redis was down during scheduling)
-        // Only fetch jobs that were NOT successfully queued to Redis
-        List<JobEntity> missedJobs = jobRepo.findTop10ByStateAndQueuedAtIsNullAndScheduledAtBeforeOrderByPriorityDescScheduledAtAsc(
-                JobState.PENDING, Instant.now()
-        );
+        List<JobEntity> missedJobs = jobRepo
+                .findTop10ByStateAndQueuedAtIsNullAndScheduledAtBeforeOrderByPriorityDescScheduledAtAsc(
+                        JobState.PENDING, Instant.now()
+                );
 
         for (JobEntity job : missedJobs) {
             if (!queuedJobIds.contains(job.getId())) {
@@ -82,85 +73,68 @@ public class WorkerService {
 
         if (!missedJobs.isEmpty()) {
             System.out.println("🔄 Worker fetched " + missedJobs.size() +
-                    " jobs from DB fallback (Redis was unavailable)");
+                    " jobs from DB fallback");
         }
     }
 
-    /**
-     * Process jobs from in-memory queue
-     */
     @Scheduled(fixedRate = 500)
     public void processReadyJobs() {
         Instant now = Instant.now();
 
-        // Process up to 5 jobs per cycle
         for (int i = 0; i < 5; i++) {
             JobEntity job = jobQueue.poll();
             if (job == null) break;
 
-            // Remove from tracking set
             queuedJobIds.remove(job.getId());
 
-            // Check if job is ready
             if (job.getScheduledAt().isAfter(now)) {
-                // Not ready yet, put it back
                 jobQueue.offer(job);
                 queuedJobIds.add(job.getId());
-                break; // Stop processing, jobs are roughly sorted
+                break;
             }
 
-            // Acquire lease before processing
             if (acquireLease(job)) {
                 processJob(job);
             } else {
-                // Another worker grabbed it, skip
-                System.out.println("⚠️ Job " + job.getId() + " already claimed by another worker");
+                System.out.println("⚠️ Job " + job.getId() + " already claimed");
             }
         }
     }
 
-    /**
-     * Acquire a lease on the job (distributed lock via DB)
-     */
     @Transactional
     public boolean acquireLease(JobEntity job) {
-        // Re-fetch and lock the job
         Optional<JobEntity> fresh = jobRepo.findById(job.getId());
 
         if (fresh.isEmpty() || fresh.get().getState() != JobState.PENDING) {
-            return false; // Already processed or deleted
+            return false;
         }
 
         JobEntity locked = fresh.get();
+        Instant now = Instant.now();
+
         locked.setState(JobState.RUNNING);
         locked.setOwnerWorkerId(workerId);
-        locked.setLeaseExpiresAt(Instant.now().plusSeconds(30));
-        locked.setUpdatedAt(Instant.now());
+        locked.setLeaseExpiresAt(now.plusSeconds(LEASE_DURATION_SECONDS));
+        locked.setMaxLeaseDeadline(now.plusSeconds(MAX_EXECUTION_SECONDS)); // ← NEW
+        locked.setUpdatedAt(now);
 
         jobRepo.save(locked);
 
-        // Update our local reference
         job.setState(JobState.RUNNING);
         job.setOwnerWorkerId(workerId);
 
         return true;
     }
 
-    /**
-     * Execute job logic
-     */
     @Transactional
     public void processJob(JobEntity job) {
-        System.out.println("⚙️ [Worker:" + workerId.substring(0, 8) + "] Executing job " + job.getId() +
-                " [queue=" + job.getQueueType() +
+        System.out.println("⚙️ [Worker:" + workerId.substring(0, 8) + "] Executing job " +
+                job.getId() + " [queue=" + job.getQueueType() +
                 ", priority=" + job.getPriority() +
                 ", attempt=" + (job.getAttempts() + 1) + "/" + job.getMaxAttempts() + "]");
 
         try {
-            // Simulate work with random duration
             Thread.sleep(ThreadLocalRandom.current().nextInt(500, 2000));
-
-            // Simulate 70% success rate
             boolean success = ThreadLocalRandom.current().nextInt(100) > 30;
 
             if (success) {
@@ -177,9 +151,6 @@ public class WorkerService {
         }
     }
 
-    /**
-     * Handle job failure with exponential backoff
-     */
     @Transactional
     public void handleFailure(JobEntity job, Exception e) {
         job.setAttempts(job.getAttempts() + 1);
@@ -187,13 +158,13 @@ public class WorkerService {
         job.setUpdatedAt(Instant.now());
 
         if (job.getAttempts() < job.getMaxAttempts()) {
-            // Exponential backoff: 5s, 10s, 20s, 40s, 80s
             long delaySeconds = (long) Math.pow(2, job.getAttempts()) * 5;
             job.setScheduledAt(Instant.now().plusSeconds(delaySeconds));
             job.setState(JobState.PENDING);
             job.setOwnerWorkerId(null);
             job.setLeaseExpiresAt(null);
-            job.setQueuedAt(null); // Allow re-queuing by scheduler
+            job.setMaxLeaseDeadline(null); // ← RESET
+            job.setQueuedAt(null);
 
             jobRepo.save(job);
 
@@ -208,22 +179,46 @@ public class WorkerService {
     }
 
     /**
-     * Heartbeat to extend lease while processing long jobs
+     * Heartbeat with timeout protection
      */
     @Scheduled(fixedRate = 10000)
     @Transactional
     public void sendHeartbeat() {
+        Instant now = Instant.now();
         List<JobEntity> myJobs = jobRepo.findByStateAndOwnerWorkerId(JobState.RUNNING, workerId);
 
+        int extended = 0;
+        int timedOut = 0;
+
         for (JobEntity job : myJobs) {
-            job.setLeaseExpiresAt(Instant.now().plusSeconds(30));
-            job.setHeartbeatAt(Instant.now());
-            jobRepo.save(job);
+            // Check if job exceeded max execution time
+            if (now.isAfter(job.getMaxLeaseDeadline())) {
+                // Job taking too long, kill it
+                job.setState(JobState.DEAD);
+                job.setLastError("Exceeded max execution time (" + MAX_EXECUTION_SECONDS + "s)");
+                job.setOwnerWorkerId(null);
+                job.setLeaseExpiresAt(null);
+                job.setMaxLeaseDeadline(null);
+                job.setUpdatedAt(now);
+                jobRepo.save(job);
+
+                timedOut++;
+                System.out.println("⏰ Job " + job.getId() + " timed out after " +
+                        MAX_EXECUTION_SECONDS + "s");
+            } else {
+                // Normal heartbeat - extend lease
+                job.setLeaseExpiresAt(now.plusSeconds(LEASE_DURATION_SECONDS));
+                job.setHeartbeatAt(now);
+                job.setUpdatedAt(now);
+                jobRepo.save(job);
+                extended++;
+            }
         }
 
-        if (!myJobs.isEmpty()) {
-            System.out.println("💓 [Worker:" + workerId.substring(0, 8) +
-                    "] Heartbeat sent for " + myJobs.size() + " jobs");
+        if (extended > 0 || timedOut > 0) {
+            System.out.println("💓 [Worker:" + workerId.substring(0, 8) + "] Heartbeat: " +
+                    extended + " extended" +
+                    (timedOut > 0 ? ", " + timedOut + " timed out" : ""));
         }
     }
 }

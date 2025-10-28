@@ -85,6 +85,9 @@ public class JobEntity {
     @Column(name = "lease_expires_at")
     private Instant leaseExpiresAt;
 
+    @Column(name = "max_lease_deadline")
+    private Instant maxLeaseDeadline;
+
     @Column(name = "heartbeat_at")
     private Instant heartbeatAt;
 
