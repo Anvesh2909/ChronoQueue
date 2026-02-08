@@ -62,7 +62,7 @@ public class JobEntity {
     @Column(name = "max_attempts")
     private Integer maxAttempts = 5;
 
-    @Column(unique = true)
+    @Column(unique = true, nullable = false)
     private String idempotencyKey;
 
     @Column(name = "queued_at")
