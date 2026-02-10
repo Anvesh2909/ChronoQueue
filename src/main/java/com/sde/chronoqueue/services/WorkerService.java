@@ -1,6 +1,5 @@
 package com.sde.chronoqueue.services;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sde.chronoqueue.entities.JobEntity;
 import com.sde.chronoqueue.enums.JobState;
 import com.sde.chronoqueue.repositories.JobEntityRepository;
@@ -54,6 +53,7 @@ public class WorkerService {
     }
 
     @Scheduled(fixedRate = 500)
+    @Transactional  // ← ADD THIS!
     public void processJobs() {
         for (int i = 0; i < 5; i++) {
             JobEntity job = jobQueue.poll();
@@ -70,13 +70,17 @@ public class WorkerService {
             );
 
             if (acquired == 1) {
-                execute(job);
+                // Refresh the job entity from DB after lease acquisition
+                jobRepo.findById(job.getId()).ifPresent(this::executeJob);
             }
         }
     }
 
-    private void execute(JobEntity job) {
+    @Transactional
+    public void executeJob(JobEntity job) {
         try {
+            System.out.println("🔄 Executing job " + job.getId() + " (attempts: " + job.getAttempts() + ")");
+
             Thread.sleep(ThreadLocalRandom.current().nextInt(500, 2000));
 
             if (ThreadLocalRandom.current().nextInt(100) < 30) {
@@ -84,16 +88,26 @@ public class WorkerService {
             }
 
             job.setState(JobState.SUCCEEDED);
+            job.setUpdatedAt(Instant.now());
+            job.setOwnerWorkerId(null);
+            job.setLeaseExpiresAt(null);
+            job.setMaxLeaseDeadline(null);
             jobRepo.save(job);
 
+            System.out.println("✅ Job " + job.getId() + " completed successfully");
+
         } catch (Exception e) {
-            handleFailure(job, e);
+            handleJobFailure(job, e);
         }
     }
 
-    private void handleFailure(JobEntity job, Exception e) {
+    @Transactional
+    public void handleJobFailure(JobEntity job, Exception e) {
+        System.out.println("❌ Job " + job.getId() + " failed: " + e.getMessage());
+
         job.setAttempts(job.getAttempts() + 1);
         job.setLastError(e.getMessage());
+        job.setUpdatedAt(Instant.now());
 
         if (job.getAttempts() < job.getMaxAttempts()) {
             job.setState(JobState.PENDING);
@@ -101,8 +115,10 @@ public class WorkerService {
                     (long) Math.pow(2, job.getAttempts()) * 5
             ));
             job.setQueuedAt(null);
+            System.out.println("🔄 Job " + job.getId() + " will retry (attempt " + job.getAttempts() + "/" + job.getMaxAttempts() + ")");
         } else {
             job.setState(JobState.DEAD);
+            System.out.println("💀 Job " + job.getId() + " marked as DEAD after " + job.getAttempts() + " attempts");
         }
 
         job.setOwnerWorkerId(null);
@@ -110,7 +126,6 @@ public class WorkerService {
         job.setMaxLeaseDeadline(null);
         jobRepo.save(job);
     }
-
 
     /**
      * Heartbeat with timeout protection
@@ -120,9 +135,13 @@ public class WorkerService {
     public void heartbeat() {
         Instant now = Instant.now();
 
-        for (JobEntity job :
-                jobRepo.findByStateAndOwnerWorkerId(JobState.RUNNING, workerId)) {
+        List<JobEntity> runningJobs = jobRepo.findByStateAndOwnerWorkerId(JobState.RUNNING, workerId);
 
+        if (!runningJobs.isEmpty()) {
+            System.out.println("💓 Heartbeat for " + runningJobs.size() + " running jobs");
+        }
+
+        for (JobEntity job : runningJobs) {
             int updated = jobRepo.extendLease(
                     job.getId(),
                     workerId,
@@ -136,5 +155,4 @@ public class WorkerService {
             }
         }
     }
-
 }
