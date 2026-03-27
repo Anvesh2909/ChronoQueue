@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.UUID;
 
-@CrossOrigin(origins = "http://localhost:3000")
+@CrossOrigin(origins = "http://16.112.57.1")
 @RestController
 @RequestMapping("/api/jobs")
 @RequiredArgsConstructor
