@@ -12,7 +12,7 @@ services:
       DB_PASSWORD: 123456789
 
   postgres:
-    image: postgres:16
+    image: postgres:17
     environment:
       POSTGRES_DB: chronoqueue
       POSTGRES_USER: anvesh-yadav
